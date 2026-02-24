@@ -1,68 +1,67 @@
-"""
-app.py - NYC Delivery System v5.2
-تحديث: إصلاح البوت + إضافة لوحة التحكم
-"""
-
 import os
 import time
 import logging
-from datetime import datetime
+import threading
 from flask import Flask, request, jsonify, render_template_string
-
 import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# استيراد الموديلات (تأكد من وجود الملفات الأخرى في مشروعك)
+# استيراد الملفات الأخرى (تأكد من وجودها في GitHub)
 from config import Config, RESTAURANTS
 from database import Database
-from mapbox_utils import MapboxUtils
-from pricing import PricingEngine
 
-# الإعدادات الأساسية
+# إعداد التنبيهات
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
+# إعداد التطبيق والبوت
 app = Flask(__name__)
 bot = telebot.TeleBot(Config.BOT_TOKEN, parse_mode="HTML")
 db = Database(Config.DB_FILE)
-data = db.load()
 
 # ══════════════════════════════════════════════════════════════
-# لوحة التحكم (DASHBOARD HTML)
+# لوحة التحكم (Dashboard UI)
 # ══════════════════════════════════════════════════════════════
 DASHBOARD_HTML = """
 <!DOCTYPE html>
 <html dir="rtl">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>لوحة التحكم | NYC Delivery</title>
     <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f4f7f6; margin: 0; padding: 20px; }
-        .container { max-width: 900px; margin: auto; background: white; padding: 30px; border-radius: 15px; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
-        .header { border-bottom: 2px solid #eee; padding-bottom: 20px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; }
-        .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
-        .stat-card { background: #eef2f3; padding: 20px; border-radius: 10px; text-align: center; }
-        .stat-card h3 { margin: 0; color: #555; font-size: 14px; }
-        .stat-card p { font-size: 24px; font-weight: bold; margin: 10px 0; color: #2c3e50; }
-        .status-ok { color: #27ae60; font-weight: bold; }
-        .btn { background: #3498db; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, sans-serif; background: #0f172a; color: white; margin: 0; padding: 20px; }
+        .container { max-width: 1000px; margin: auto; }
+        .card { background: #1e293b; padding: 25px; border-radius: 15px; border: 1px solid #334155; margin-bottom: 20px; text-align: center; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; }
+        .stat-val { font-size: 32px; font-weight: bold; color: #38bdf8; }
+        .status { display: inline-block; padding: 5px 15px; border-radius: 20px; background: #059669; font-size: 14px; }
+        h1 { color: #f8fafc; }
+        .rest-list { text-align: right; }
+        .btn { background: #38bdf8; color: #0f172a; padding: 10px 20px; text-decoration: none; border-radius: 8px; font-weight: bold; }
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="header">
-            <h1>🗽 لوحة تحكم NYC Delivery</h1>
-            <span class="status-ok">● النظام يعمل</span>
+        <div class="card">
+            <h1>🗽 NYC Delivery System v5.2</h1>
+            <div class="status">● النظام متصل ويعمل</div>
+            <p>رابط الويب: <code>{{ web_url }}</code></p>
         </div>
-        <div class="stats-grid">
-            <div class="stat-card"><h3>إجمالي الطلبات</h3><p>{{ stats.total_orders }}</p></div>
-            <div class="stat-card"><h3>السائقين النشطين</h3><p>{{ stats.active_drivers }}</p></div>
-            <div class="stat-card"><h3>إجمالي الأرباح</h3><p>${{ stats.total_earned }}</p></div>
+        
+        <div class="grid">
+            <div class="card"><div class="stat-val">{{ stats.drivers }}</div><div>سائق نشط</div></div>
+            <div class="card"><div class="stat-val">{{ stats.orders }}</div><div>إجمالي الطلبات</div></div>
+            <div class="card"><div class="stat-val">${{ stats.profit }}</div><div>صافي الأرباح</div></div>
         </div>
-        <div style="margin-top:30px;">
-            <h3>🔗 روابط سريعة</h3>
-            <p>رابط البوت: <a href="https://t.me/{{ bot_username }}">@{{ bot_username }}</a></p>
-            <p>رابط الموقع: <code>{{ web_url }}</code></p>
+
+        <div class="card rest-list">
+            <h3>🏠 المطاعم المسجلة (White Label)</h3>
+            <ul>
+                {% for slug, rest in restaurants.items() %}
+                <li><a href="/{{ slug }}" style="color: #38bdf8;">{{ rest.name }}</a> - الحد الأدنى: ${{ rest.min_order }}</li>
+                {% endfor %}
+            </ul>
+            <p style="margin-top:20px;">🤖 البوت: <a href="https://t.me/NYC_Delivery_Bot" class="btn">افتح التليجرام</a></p>
         </div>
     </div>
 </body>
@@ -70,78 +69,63 @@ DASHBOARD_HTML = """
 """
 
 # ══════════════════════════════════════════════════════════════
-# ROUTES
+# ROUTES (المسارات)
 # ══════════════════════════════════════════════════════════════
 
 @app.route('/')
-def home():
-    """تفعيل البوت تلقائياً وعرض إحصائيات بسيطة"""
-    try:
-        # إعادة ضبط الـ Webhook عند كل زيارة للصفحة الرئيسية للتأكد من عمله
-        webhook_url = f"{Config.WEBHOOK_URL}/{Config.BOT_TOKEN}"
-        bot.remove_webhook()
-        time.sleep(0.1)
-        bot.set_webhook(url=webhook_url)
-        
-        # تجهيز بيانات لوحة التحكم
-        stats = {
-            "total_orders": sum(d.get('completed', 0) for d in data.get('stats', {}).values()),
-            "active_drivers": len(data.get('drivers', {})),
-            "total_earned": round(sum(d.get('earned', 0) for d in data.get('stats', {}).values()), 2)
-        }
-        
-        return render_template_string(DASHBOARD_HTML, 
-                                    stats=stats, 
-                                    bot_username=bot.get_me().username,
-                                    web_url=Config.WEBHOOK_URL)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route(f'/{Config.BOT_TOKEN}', methods=['POST'])
-def telegram_webhook():
-    """استقبال رسائل تليجرام"""
-    if request.headers.get('content-type') == 'application/json':
-        json_string = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_string)
-        bot.process_new_updates([update])
-        return '', 200
-    else:
-        return jsonify({"error": "Unauthorized"}), 403
-
-# مسارات البوت الأساسية
-@bot.message_handler(commands=['start'])
-def start(message):
-    bot.reply_to(message, "🗽 <b>مرحباً بك في نظام NYC Delivery!</b>\nالبوت يعمل الآن بنجاح ✅")
+def index():
+    """عرض لوحة التحكم"""
+    data = db.load()
+    stats = {
+        "drivers": len(data.get('drivers', {})),
+        "orders": data.get('completed', 0),
+        "profit": round(data.get('profit', 0.0), 2)
+    }
+    return render_template_string(DASHBOARD_HTML, stats=stats, restaurants=RESTAURANTS, web_url=Config.WEBHOOK_URL)
 
 @app.route('/<slug>')
 def restaurant_page(slug):
+    """صفحة المطعم"""
     rest = RESTAURANTS.get(slug)
-    if not rest: return f"Restaurant {slug} not found", 404
-    return f"<h1>Welcome to {rest['name']}</h1>" # (يمكنك وضع كود HTML المطعم هنا)
+    if not rest:
+        return f"المطعم {slug} غير موجود", 404
+    return f"<h1>مرحباً بك في {rest['name']}</h1><p>سيتم تفعيل المنيو هنا قريباً.</p>"
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=10000)
-# --- استبدل الجزء الأخير من ملف app.py بهذا الكود المطور ---
+# ══════════════════════════════════════════════════════════════
+# BOT LOGIC (التعامل مع البوت)
+# ══════════════════════════════════════════════════════════════
 
-def start_bot():
-    """تشغيل البوت في خلفية السيرفر لتجنب تعليق الموقع"""
+@bot.message_handler(commands=['start'])
+def handle_start(message):
+    welcome_text = (
+        "🗽 <b>مرحباً بك في NYC Delivery!</b>\n\n"
+        "✅ النظام يعمل بنجاح الآن.\n"
+        "🚕 هذا البوت مخصص للسائقين لاستلام الطلبات.\n\n"
+        "لوحة التحكم متوفرة الآن على الرابط الخاص بك."
+    )
+    bot.reply_to(message, welcome_text)
+
+def run_bot_polling():
+    """تشغيل البوت بنظام البحث المستمر"""
     while True:
         try:
-            log.info("🔄 جاري محاولة تشغيل البوت بنظام Polling...")
-            bot.remove_webhook() # حذف أي ربط قديم معطل
-            time.sleep(1)
+            log.info("🔄 جاري الاتصال بتليجرام...")
+            bot.remove_webhook()
             bot.infinity_polling(timeout=20, long_polling_timeout=5)
         except Exception as e:
-            log.error(f"❌ خطأ في البوت: {e}")
-            time.sleep(5) # الانتظار قبل إعادة المحاولة
+            log.error(f"❌ خطأ في اتصال البوت: {e}")
+            time.sleep(5)
+
+# ══════════════════════════════════════════════════════════════
+# START SERVER
+# ══════════════════════════════════════════════════════════════
 
 if __name__ == '__main__':
-    # تشغيل البوت في Thread منفصل حتى لا يتوقف الموقع
-    import threading
-    bot_thread = threading.Thread(target=start_bot)
-    bot_thread.daemon = True
-    bot_thread.start()
+    # تشغيل البوت في "خيط" منفصل (Thread)
+    t = threading.Thread(target=run_bot_polling)
+    t.daemon = True
+    t.start()
     
-    # تشغيل سيرفر الويب (لوحة التحكم والمطاعم)
-    log.info("🚀 تشغيل سيرفر الويب على المنفذ 10000")
+    # تشغيل السيرفر
+    log.info("🚀 تشغيل النظام v5.2...")
     app.run(host='0.0.0.0', port=10000)
