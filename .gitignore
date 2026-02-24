@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.env
+delivery_db.json
+*.log
+.vscode/
+.DS_Store
