@@ -121,3 +121,27 @@ def restaurant_page(slug):
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=10000)
+# --- استبدل الجزء الأخير من ملف app.py بهذا الكود المطور ---
+
+def start_bot():
+    """تشغيل البوت في خلفية السيرفر لتجنب تعليق الموقع"""
+    while True:
+        try:
+            log.info("🔄 جاري محاولة تشغيل البوت بنظام Polling...")
+            bot.remove_webhook() # حذف أي ربط قديم معطل
+            time.sleep(1)
+            bot.infinity_polling(timeout=20, long_polling_timeout=5)
+        except Exception as e:
+            log.error(f"❌ خطأ في البوت: {e}")
+            time.sleep(5) # الانتظار قبل إعادة المحاولة
+
+if __name__ == '__main__':
+    # تشغيل البوت في Thread منفصل حتى لا يتوقف الموقع
+    import threading
+    bot_thread = threading.Thread(target=start_bot)
+    bot_thread.daemon = True
+    bot_thread.start()
+    
+    # تشغيل سيرفر الويب (لوحة التحكم والمطاعم)
+    log.info("🚀 تشغيل سيرفر الويب على المنفذ 10000")
+    app.run(host='0.0.0.0', port=10000)
